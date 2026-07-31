@@ -1,0 +1,10 @@
+[package]
+name = "cjson-rs"
+version = "1.7.19"
+edition = "2021"
+description = "Memory-safe Rust implementation of cJSON_InitHooks and cJSON_Delete — Port Mortem 2026 Hackathon"
+license = "MIT"
+
+[lib]
+name = "cjson_rs"
+crate-type = ["staticlib", "rlib"]

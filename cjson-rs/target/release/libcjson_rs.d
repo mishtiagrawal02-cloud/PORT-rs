@@ -1,0 +1,1 @@
+/Users/manshaagarwal/github_new/cJSON/cjson-rs/target/release/libcjson_rs.rlib: /Users/manshaagarwal/github_new/cJSON/cjson-rs/src/ffi_impl.rs /Users/manshaagarwal/github_new/cJSON/cjson-rs/src/lib.rs /Users/manshaagarwal/github_new/cJSON/cjson-rs/src/safe.rs

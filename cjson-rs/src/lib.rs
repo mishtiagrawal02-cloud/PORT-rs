@@ -52,7 +52,7 @@ pub mod parser;
 mod ffi_impl;
 
 // Re-export the implemented functions so they can be used from examples
-pub use ffi_impl::{cJSON_InitHooks, cJSON_Delete};
+pub use ffi_impl::{cJSON_InitHooks, cJSON_Delete, cJSON_Parse};
 
 // ---------------------------------------------------------------------------
 // Version constants (cJSON.h lines 82-84)
@@ -206,13 +206,13 @@ extern "C" {
     // -----------------------------------------------------------------------
     // Parsing
     //
+    // NOTE: cJSON_Parse is now IMPLEMENTED in Rust (see ffi_impl.rs).
+    // It is exported as #[no_mangle] extern "C" — NOT imported here.
+    //
     // Safe-wrapper note:  Each parser returns a *mut cJSON that the caller
     // owns.  The safe layer will return `Option<CJson>` (None on parse
     // failure) and the Drop impl calls cJSON_Delete.
     // -----------------------------------------------------------------------
-
-    /// Parse a NUL-terminated JSON string. Returns NULL on failure.
-    pub fn cJSON_Parse(value: *const c_char) -> *mut cJSON;
 
     /// Parse JSON from a buffer of known length. Returns NULL on failure.
     pub fn cJSON_ParseWithLength(value: *const c_char, buffer_length: usize) -> *mut cJSON;

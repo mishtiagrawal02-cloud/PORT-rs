@@ -1,0 +1,176 @@
+# =============================================================================
+#  Makefile.rust — Build legacy Unity tests against libcjson_rs.a
+#
+#  Usage:
+#    make -f Makefile.rust           # build all 6 compatible tests
+#    make -f Makefile.rust test      # build + run all tests
+#    make -f Makefile.rust clean     # remove build artifacts
+#
+#  This Makefile:
+#    1. Builds the Rust static library (libcjson_rs.a) via cargo
+#    2. Compiles cJSON.c into an object file, EXCLUDING the 3 functions
+#       that Rust now provides (cJSON_Parse, cJSON_Delete, cJSON_InitHooks)
+#    3. Compiles each compatible test .c file, replacing #include "common.h"
+#       with #include "common_rust.h" via sed
+#    4. Links everything together: test.o + cjson_compat.o + unity.o +
+#       libcjson_rs.a + system libs
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+#  Directories
+# ---------------------------------------------------------------------------
+PROJECT_ROOT := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))..
+RUST_CRATE   := $(PROJECT_ROOT)/cjson-rs
+RUST_LIB     := $(RUST_CRATE)/target/release/libcjson_rs.a
+TESTS_DIR    := $(PROJECT_ROOT)/tests
+BUILD_DIR    := $(TESTS_DIR)/build_rust
+
+# ---------------------------------------------------------------------------
+#  Compiler / flags
+# ---------------------------------------------------------------------------
+CC       ?= cc
+CFLAGS   := -Wall -Wextra -std=c99 -I$(PROJECT_ROOT) -I$(TESTS_DIR)
+
+# ---------------------------------------------------------------------------
+#  Platform-specific linker flags for Rust static library
+# ---------------------------------------------------------------------------
+UNAME_S := $(shell uname -s)
+
+ifeq ($(UNAME_S),Darwin)
+    # macOS: Rust runtime needs these system frameworks/libs
+    RUST_LDFLAGS := -lSystem -liconv -framework CoreFoundation -framework Security
+else
+    # Linux x86_64 (and most other Unix)
+    RUST_LDFLAGS := -lpthread -ldl -lm
+endif
+
+# Common math library (needed by cJSON.c for strtod etc.)
+LDFLAGS := -lm $(RUST_LDFLAGS)
+
+# ---------------------------------------------------------------------------
+#  Sources
+# ---------------------------------------------------------------------------
+
+# The 6 test files that only use the public cJSON API
+COMPATIBLE_TESTS := \
+    parse_examples \
+    readme_examples \
+    compare_tests \
+    cjson_add \
+    minify_tests \
+    parse_with_opts
+
+# Unity test framework
+UNITY_SRC := $(TESTS_DIR)/unity/src/unity.c
+
+# cJSON C source — compiled with Rust-ported functions stubbed out
+CJSON_COMPAT_SRC := $(PROJECT_ROOT)/cJSON.c
+
+# ---------------------------------------------------------------------------
+#  Build artifacts
+# ---------------------------------------------------------------------------
+UNITY_OBJ       := $(BUILD_DIR)/unity.o
+CJSON_COMPAT_OBJ := $(BUILD_DIR)/cjson_compat.o
+TEST_BINS        := $(addprefix $(BUILD_DIR)/,$(COMPATIBLE_TESTS))
+
+# ---------------------------------------------------------------------------
+#  Phony targets
+# ---------------------------------------------------------------------------
+.PHONY: all test clean rust_lib
+
+all: $(TEST_BINS)
+
+# ---------------------------------------------------------------------------
+#  Step 1: Build the Rust static library
+# ---------------------------------------------------------------------------
+rust_lib: $(RUST_LIB)
+
+$(RUST_LIB):
+	@echo "=== Building Rust static library ==="
+	cd $(RUST_CRATE) && cargo build --release
+	@echo ""
+
+# ---------------------------------------------------------------------------
+#  Step 2: Compile cJSON.c with Rust-ported functions stubbed out
+#
+#  We #define the 3 function names to _disabled_* so they compile to
+#  unreachable dead code. The linker then picks up the real implementations
+#  from libcjson_rs.a instead.
+# ---------------------------------------------------------------------------
+$(CJSON_COMPAT_OBJ): $(CJSON_COMPAT_SRC) $(PROJECT_ROOT)/cJSON.h | $(BUILD_DIR)
+	@echo "=== Compiling cJSON.c (compat mode — Rust-ported functions stubbed) ==="
+	$(CC) -c $(CFLAGS) \
+		-DcJSON_Parse=_disabled_cJSON_Parse \
+		-DcJSON_Delete=_disabled_cJSON_Delete \
+		-DcJSON_InitHooks=_disabled_cJSON_InitHooks \
+		-Wno-unused-function \
+		-Wno-unused-parameter \
+		-o $@ $(CJSON_COMPAT_SRC)
+
+# ---------------------------------------------------------------------------
+#  Step 3: Compile Unity
+# ---------------------------------------------------------------------------
+$(UNITY_OBJ): $(UNITY_SRC) | $(BUILD_DIR)
+	@echo "=== Compiling Unity test framework ==="
+	$(CC) -c -std=c99 -w -I$(TESTS_DIR)/unity/src -o $@ $(UNITY_SRC)
+
+# ---------------------------------------------------------------------------
+#  Step 4: Compile and link each test binary
+#
+#  Each test .c file includes "common.h" — we use sed to swap it for
+#  "common_rust.h". This avoids modifying the original test sources.
+# ---------------------------------------------------------------------------
+$(BUILD_DIR)/%: $(TESTS_DIR)/%.c $(CJSON_COMPAT_OBJ) $(UNITY_OBJ) $(RUST_LIB) $(TESTS_DIR)/common_rust.h | $(BUILD_DIR)
+	@echo "=== Building test: $* ==="
+	@# Create a patched copy that includes common_rust.h instead of common.h
+	sed 's|#include "common.h"|#include "common_rust.h"|g' $< > $(BUILD_DIR)/$*_patched.c
+	$(CC) $(CFLAGS) \
+		-I$(TESTS_DIR) \
+		-Wno-unused-function \
+		-o $@ \
+		$(BUILD_DIR)/$*_patched.c \
+		$(CJSON_COMPAT_OBJ) \
+		$(UNITY_OBJ) \
+		$(RUST_LIB) \
+		$(LDFLAGS)
+	@rm -f $(BUILD_DIR)/$*_patched.c
+
+# ---------------------------------------------------------------------------
+#  Step 5: Run tests
+# ---------------------------------------------------------------------------
+test: $(TEST_BINS)
+	@echo ""
+	@echo "========================================================"
+	@echo "  Running 6 Unity tests against libcjson_rs.a (Rust)"
+	@echo "========================================================"
+	@echo ""
+	@passed=0; failed=0; \
+	for test_bin in $(TEST_BINS); do \
+		test_name=$$(basename $$test_bin); \
+		echo "--- $$test_name ---"; \
+		cd $(TESTS_DIR) && $$test_bin; \
+		if [ $$? -eq 0 ]; then \
+			passed=$$((passed + 1)); \
+		else \
+			failed=$$((failed + 1)); \
+		fi; \
+		echo ""; \
+	done; \
+	echo "========================================================"; \
+	echo "  Results: $$passed passed, $$failed failed (of 6)"; \
+	echo "========================================================"; \
+	if [ $$failed -ne 0 ]; then exit 1; fi
+
+# ---------------------------------------------------------------------------
+#  Utilities
+# ---------------------------------------------------------------------------
+$(BUILD_DIR):
+	mkdir -p $(BUILD_DIR)
+	@# Copy test input files if they exist
+	@if [ -d $(TESTS_DIR)/inputs ]; then \
+		mkdir -p $(BUILD_DIR)/inputs && \
+		cp -r $(TESTS_DIR)/inputs/* $(BUILD_DIR)/inputs/ 2>/dev/null || true; \
+	fi
+
+clean:
+	rm -rf $(BUILD_DIR)

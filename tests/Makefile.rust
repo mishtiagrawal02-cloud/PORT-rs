@@ -101,6 +101,7 @@ $(CJSON_COMPAT_OBJ): $(CJSON_COMPAT_SRC) $(PROJECT_ROOT)/cJSON.h | $(BUILD_DIR)
 	@echo "=== Compiling cJSON.c (compat mode — Rust-ported functions stubbed) ==="
 	$(CC) -c $(CFLAGS) \
 		-DcJSON_Parse=_disabled_cJSON_Parse \
+		-DcJSON_ParseWithOpts=_disabled_cJSON_ParseWithOpts \
 		-DcJSON_Delete=_disabled_cJSON_Delete \
 		-DcJSON_InitHooks=_disabled_cJSON_InitHooks \
 		-DcJSON_GetErrorPtr=_disabled_cJSON_GetErrorPtr \

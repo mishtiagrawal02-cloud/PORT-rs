@@ -1,20 +1,124 @@
-.svn
-test
+# ═══════════════════════════════════════════════════════════════
+# PORT MORTEM 2026 - cJSON-rs Comprehensive .gitignore
+# ═══════════════════════════════════════════════════════════════
+
+# ───────────────────────────────────────────────────────────────
+# Rust Build Artifacts (CRITICAL - DO NOT COMMIT)
+# ───────────────────────────────────────────────────────────────
+**/target/
+**/*.rs.bk
+**/Cargo.lock.bk
+
+# Rust debug and release binaries
+cjson_rust
+debug/
+release/
+
+# ───────────────────────────────────────────────────────────────
+# C/C++ Compilation Artifacts
+# ───────────────────────────────────────────────────────────────
 *.o
 *.a
 *.so
-*.swp
-*.patch
-tags
-*.dylib*
-build/
+*.so.*
+*.dylib
+*.dylib.*
+*.dll
+*.exe
+*.out
+*.obj
+*.lib
+
+# C binaries
 cJSON_test
 cJSON_test_utils
-libcjson.so.*
-libcjson_utils.so.*
+cjson_c_original
+test
+
+# ───────────────────────────────────────────────────────────────
+# CMake Build System
+# ───────────────────────────────────────────────────────────────
+build/
+cmake-build-debug/
+cmake-build-release/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+
+# ───────────────────────────────────────────────────────────────
+# Test Artifacts and Coverage
+# ───────────────────────────────────────────────────────────────
+tests/build_rust/
+tests/*.log
+tests/*.out
+*.gcda
+*.gcno
+*.gcov
+coverage/
+lcov.info
+
+# ───────────────────────────────────────────────────────────────
+# Fuzzing Artifacts (Keep logs, exclude corpus/crashes)
+# ───────────────────────────────────────────────────────────────
+cjson-rs/fuzz/corpus/
+cjson-rs/fuzz/artifacts/
+cjson-rs/fuzz/target/
+
+# ───────────────────────────────────────────────────────────────
+# Editor and IDE Configuration
+# ───────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+.*.swp
+tags
+.tags
+
+# ───────────────────────────────────────────────────────────────
+# Version Control and Patches
+# ───────────────────────────────────────────────────────────────
+.svn/
 *.orig
-.vscode
-.idea
-cmake-build-debug
+*.rej
+*.patch
+
+# ───────────────────────────────────────────────────────────────
+# System Files
+# ───────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ───────────────────────────────────────────────────────────────
+# Assembly and Listing Files
+# ───────────────────────────────────────────────────────────────
 *.lst
 *.lss
+*.s
+
+# ───────────────────────────────────────────────────────────────
+# KEEP THESE - Required for Submission
+# ───────────────────────────────────────────────────────────────
+# ✅ Source code (.c, .h, .rs)
+# ✅ Scripts (.sh, .py)
+# ✅ Documentation (.md)
+# ✅ Demo artifacts (crash_proof.json, fuzzer_crash.log)
+# ✅ Build configurations (Makefile, CMakeLists.txt, Cargo.toml)
+# ✅ CI configurations (.travis.yml, appveyor.yml, .github/workflows/)
+
+# ───────────────────────────────────────────────────────────────
+# Explicit Exceptions (Force Include Despite Rules Above)
+# ───────────────────────────────────────────────────────────────
+!demo_and_scripts/crash_proof.json
+!demo_and_scripts/fuzzer_crash.log
+!demo_and_scripts/*.sh
+!demo_and_scripts/*.py
+
+# ═══════════════════════════════════════════════════════════════
+# END OF .gitignore
+# ═══════════════════════════════════════════════════════════════

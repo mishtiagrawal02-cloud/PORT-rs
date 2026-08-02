@@ -59,7 +59,16 @@ mod ffi_impl;
 pub mod ffi_impl_all;
 
 // Re-export the implemented functions so they can be used from examples
-pub use ffi_impl::{cJSON_InitHooks, cJSON_Delete, cJSON_Parse};
+pub use ffi_impl::{
+    cJSON_InitHooks, cJSON_Delete, cJSON_Parse, cJSON_ParseWithOpts, cJSON_GetErrorPtr,
+    cJSON_CreateNull, cJSON_CreateTrue, cJSON_CreateFalse, cJSON_CreateBool,
+    cJSON_CreateNumber, cJSON_CreateString, cJSON_CreateRaw,
+    cJSON_CreateArray, cJSON_CreateObject,
+    cJSON_CreateIntArray, cJSON_CreateFloatArray, cJSON_CreateDoubleArray, cJSON_CreateStringArray,
+    cJSON_AddNullToObject, cJSON_AddTrueToObject, cJSON_AddFalseToObject, cJSON_AddBoolToObject,
+    cJSON_AddNumberToObject, cJSON_AddStringToObject, cJSON_AddRawToObject,
+    cJSON_AddObjectToObject, cJSON_AddArrayToObject,
+};
 
 // ---------------------------------------------------------------------------
 // Version constants (cJSON.h lines 82-84)
@@ -224,13 +233,8 @@ extern "C" {
     /// Parse JSON from a buffer of known length. Returns NULL on failure.
     pub fn cJSON_ParseWithLength(value: *const c_char, buffer_length: usize) -> *mut cJSON;
 
-    /// Extended parse: optionally require NUL termination and retrieve the
-    /// pointer to the final byte parsed (or the error location on failure).
-    pub fn cJSON_ParseWithOpts(
-        value: *const c_char,
-        return_parse_end: *mut *const c_char,
-        require_null_terminated: cJSON_bool,
-    ) -> *mut cJSON;
+    // NOTE: cJSON_ParseWithOpts is now IMPLEMENTED in Rust (see ffi_impl.rs).
+    // It is exported as #[no_mangle] extern "C" — NOT imported here.
 
     /// Combines `ParseWithLength` + `ParseWithOpts`.
     pub fn cJSON_ParseWithLengthOpts(
@@ -311,9 +315,8 @@ extern "C" {
     // Error reporting
     // -----------------------------------------------------------------------
 
-    /// Returns a pointer into the most-recently-failed parse input at the
-    /// approximate error location.  Valid only after a failed `cJSON_Parse`.
-    pub fn cJSON_GetErrorPtr() -> *const c_char;
+    // NOTE: cJSON_GetErrorPtr is now IMPLEMENTED in Rust (see ffi_impl.rs).
+    // It is exported as #[no_mangle] extern "C" — NOT imported here.
 
     // -----------------------------------------------------------------------
     // Value getters
@@ -346,19 +349,15 @@ extern "C" {
     // -----------------------------------------------------------------------
     // Constructors — atomic values
     //
+    // NOTE: The following functions are now IMPLEMENTED in Rust (see ffi_impl.rs).
+    // They are exported as #[no_mangle] extern "C" — NOT imported here:
+    // - cJSON_CreateNull, cJSON_CreateTrue, cJSON_CreateFalse, cJSON_CreateBool
+    // - cJSON_CreateNumber, cJSON_CreateString, cJSON_CreateRaw
+    // - cJSON_CreateArray, cJSON_CreateObject
+    //
     // Safe-wrapper note: each returns an owned `*mut cJSON`.  The safe
     // layer wraps in `CJson` (Drop → cJSON_Delete).
     // -----------------------------------------------------------------------
-
-    pub fn cJSON_CreateNull() -> *mut cJSON;
-    pub fn cJSON_CreateTrue() -> *mut cJSON;
-    pub fn cJSON_CreateFalse() -> *mut cJSON;
-    pub fn cJSON_CreateBool(boolean: cJSON_bool) -> *mut cJSON;
-    pub fn cJSON_CreateNumber(num: c_double) -> *mut cJSON;
-    pub fn cJSON_CreateString(string: *const c_char) -> *mut cJSON;
-    pub fn cJSON_CreateRaw(raw: *const c_char) -> *mut cJSON;
-    pub fn cJSON_CreateArray() -> *mut cJSON;
-    pub fn cJSON_CreateObject() -> *mut cJSON;
 
     // -----------------------------------------------------------------------
     // Constructors — references (non-owning)
@@ -373,12 +372,12 @@ extern "C" {
 
     // -----------------------------------------------------------------------
     // Constructors — bulk array creation
+    //
+    // NOTE: The following functions are now IMPLEMENTED in Rust (see ffi_impl.rs).
+    // They are exported as #[no_mangle] extern "C" — NOT imported here:
+    // - cJSON_CreateIntArray, cJSON_CreateFloatArray
+    // - cJSON_CreateDoubleArray, cJSON_CreateStringArray
     // -----------------------------------------------------------------------
-
-    pub fn cJSON_CreateIntArray(numbers: *const c_int, count: c_int) -> *mut cJSON;
-    pub fn cJSON_CreateFloatArray(numbers: *const c_float, count: c_int) -> *mut cJSON;
-    pub fn cJSON_CreateDoubleArray(numbers: *const c_double, count: c_int) -> *mut cJSON;
-    pub fn cJSON_CreateStringArray(strings: *const *const c_char, count: c_int) -> *mut cJSON;
 
     // -----------------------------------------------------------------------
     // Mutation — adding items
@@ -484,50 +483,15 @@ extern "C" {
     // -----------------------------------------------------------------------
     // Convenience helpers — create + add in one call
     //
+    // NOTE: The following functions are now IMPLEMENTED in Rust (see ffi_impl.rs).
+    // They are exported as #[no_mangle] extern "C" — NOT imported here:
+    // - cJSON_AddNullToObject, cJSON_AddTrueToObject, cJSON_AddFalseToObject
+    // - cJSON_AddBoolToObject, cJSON_AddNumberToObject, cJSON_AddStringToObject
+    // - cJSON_AddRawToObject, cJSON_AddObjectToObject, cJSON_AddArrayToObject
+    //
     // Each returns the *added* child node (non-owning from the caller's
     // perspective — the parent now owns it).
     // -----------------------------------------------------------------------
-
-    pub fn cJSON_AddNullToObject(
-        object: *mut cJSON,
-        name: *const c_char,
-    ) -> *mut cJSON;
-    pub fn cJSON_AddTrueToObject(
-        object: *mut cJSON,
-        name: *const c_char,
-    ) -> *mut cJSON;
-    pub fn cJSON_AddFalseToObject(
-        object: *mut cJSON,
-        name: *const c_char,
-    ) -> *mut cJSON;
-    pub fn cJSON_AddBoolToObject(
-        object: *mut cJSON,
-        name: *const c_char,
-        boolean: cJSON_bool,
-    ) -> *mut cJSON;
-    pub fn cJSON_AddNumberToObject(
-        object: *mut cJSON,
-        name: *const c_char,
-        number: c_double,
-    ) -> *mut cJSON;
-    pub fn cJSON_AddStringToObject(
-        object: *mut cJSON,
-        name: *const c_char,
-        string: *const c_char,
-    ) -> *mut cJSON;
-    pub fn cJSON_AddRawToObject(
-        object: *mut cJSON,
-        name: *const c_char,
-        raw: *const c_char,
-    ) -> *mut cJSON;
-    pub fn cJSON_AddObjectToObject(
-        object: *mut cJSON,
-        name: *const c_char,
-    ) -> *mut cJSON;
-    pub fn cJSON_AddArrayToObject(
-        object: *mut cJSON,
-        name: *const c_char,
-    ) -> *mut cJSON;
 
     // -----------------------------------------------------------------------
     // Number / string value setters

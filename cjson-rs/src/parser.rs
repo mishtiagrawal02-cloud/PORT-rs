@@ -147,6 +147,25 @@ pub fn parse_json(input: &[u8], arena: &mut Arena) -> Result<u32, ParseError> {
     Ok(root_id.index() as u32)
 }
 
+/// Parse a JSON value and return both the root index and the position where parsing ended.
+/// Unlike `parse_json`, this does NOT reject trailing content.
+///
+/// # Returns
+/// - `Ok((root_index, end_position))` — root node index and byte position after the JSON value
+/// - `Err(ParseError)` — parsing failed
+///
+/// This is used by `cJSON_ParseWithOpts` to allow trailing content.
+/// The end_position points to the first byte AFTER the JSON value (not skipping whitespace).
+pub fn parse_json_partial(input: &[u8], arena: &mut Arena) -> Result<(u32, usize), ParseError> {
+    let mut parser = Parser::new(input);
+    let root_id = parser.parse_value(arena)?;
+    
+    // Return position immediately after the JSON value (before trailing whitespace)
+    let end_pos = parser.pos;
+
+    Ok((root_id.index() as u32, end_pos))
+}
+
 // ============================================================================
 //  Parser — internal recursive descent engine
 // ============================================================================

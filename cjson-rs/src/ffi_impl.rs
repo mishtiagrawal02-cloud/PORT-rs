@@ -23,12 +23,12 @@ use std::os::raw::{c_char, c_double, c_float, c_int};
 use std::ptr;
 
 use crate::{
-    cJSON, cJSON_Hooks,
+    cJSON, cJSON_Hooks, cJSON_bool,
     CJSON_FALSE, CJSON_TRUE, CJSON_NULL, CJSON_NUMBER, CJSON_STRING,
-    CJSON_ARRAY, CJSON_OBJECT, CJSON_IS_REFERENCE, CJSON_STRING_IS_CONST,
+    CJSON_ARRAY, CJSON_OBJECT, CJSON_RAW, CJSON_IS_REFERENCE, CJSON_STRING_IS_CONST,
 };
 use crate::arena::{Arena, JsonValue, NodeId};
-use crate::parser::parse_json;
+use crate::parser::{parse_json, parse_json_partial};
 use crate::safe::{self, BoxedNode, NodeResources};
 
 // ===========================================================================
@@ -379,27 +379,33 @@ pub unsafe extern "C" fn cJSON_ParseWithOpts(
 
     // ── Step 2: Convert raw C string to Rust byte slice ─────────────────
     let c_str = unsafe { CStr::from_ptr(value) };
-    let input: &[u8] = c_str.to_bytes();
+    let mut input: &[u8] = c_str.to_bytes();
+    
+    // ── Step 2.5: Skip UTF-8 BOM if present ──────────────────────────────
+    let bom_offset = if input.starts_with(b"\xEF\xBB\xBF") {
+        input = &input[3..];
+        3
+    } else {
+        0
+    };
 
     // ── Step 3: Parse into the Arena ───────────────────────────
     let mut arena = Arena::new();
-    let root_index = match parse_json(input, &mut arena) {
-        Ok(idx) => {
+    let (root_index, _bytes_consumed) = match parse_json_partial(input, &mut arena) {
+        Ok((idx, end_pos)) => {
             // Success — clear any previous error pointer
             clear_error_ptr();
             
-            // Set return_parse_end to where we stopped (end of valid JSON)
+            // Set return_parse_end to where parsing stopped
             if !return_parse_end.is_null() {
-                // For now, point to the NUL terminator (we consumed all input)
-                let len = input.len();
-                *return_parse_end = unsafe { value.add(len) };
+                *return_parse_end = unsafe { value.add(bom_offset + end_pos) };
             }
             
-            idx
+            (idx, end_pos)
         }
         Err(parse_error) => {
             // Parse failure — set error pointer to the position in the original input
-            let error_ptr = unsafe { value.add(parse_error.position) };
+            let error_ptr = unsafe { value.add(bom_offset + parse_error.position) };
             set_error_ptr(error_ptr);
             
             // Also set return_parse_end to the error location
@@ -412,17 +418,24 @@ pub unsafe extern "C" fn cJSON_ParseWithOpts(
     };
 
     // ── Step 4: Check null termination requirement if requested ─────────
-    // Note: Our parser already consumes all valid JSON and stops at the NUL
-    // terminator or invalid data. The C version checks if there's trailing
-    // non-whitespace data after valid JSON.
-    if require_null_terminated != 0 && !return_parse_end.is_null() {
-        let end_ptr = *return_parse_end;
+    if require_null_terminated != 0 {
+        // Get the end pointer from either the return_parse_end output or calculate it
+        let end_ptr = if !return_parse_end.is_null() {
+            *return_parse_end
+        } else {
+            // Calculate it ourselves since caller didn't provide storage
+            unsafe { value.add(bom_offset + _bytes_consumed) }
+        };
+        
         if !end_ptr.is_null() {
-            let remaining_byte = *end_ptr;
-            // If we're not at NUL terminator, there's trailing data
-            if remaining_byte != 0 {
-                // Check if it's non-whitespace (would be an error)
-                if !matches!(remaining_byte, b' ' | b'\t' | b'\n' | b'\r') {
+            // Check remaining characters after parsed JSON
+            let remaining_c_str = CStr::from_ptr(end_ptr);
+            let remaining = remaining_c_str.to_bytes();
+            
+            // Check if there's any non-whitespace content
+            for &ch in remaining {
+                if !matches!(ch, b' ' | b'\t' | b'\n' | b'\r') {
+                    // Found non-whitespace after JSON - error
                     set_error_ptr(end_ptr);
                     return ptr::null_mut();
                 }
@@ -433,6 +446,80 @@ pub unsafe extern "C" fn cJSON_ParseWithOpts(
     // ── Step 5: Materialize Arena tree → cJSON linked list ──────────────
     let root_id = NodeId::from_raw(root_index);
     materialize_arena_node(&arena, root_id)
+}
+
+/// Helper function to find the end position of a JSON value in the input.
+/// This is a simple heuristic that scans for the end of the first complete JSON value.
+fn find_json_end(input: &[u8]) -> usize {
+    let mut depth = 0;
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut i = 0;
+    
+    // Skip leading whitespace
+    while i < input.len() && matches!(input[i], b' ' | b'\t' | b'\n' | b'\r') {
+        i += 1;
+    }
+    
+    if i >= input.len() {
+        return input.len();
+    }
+    
+    // Detect value type
+    let start = i;
+    match input[i] {
+        b'{' | b'[' => {
+            let bracket = input[i];
+            let closing = if bracket == b'{' { b'}' } else { b']' };
+            depth = 1;
+            i += 1;
+            
+            while i < input.len() && depth > 0 {
+                if in_string {
+                    if escaped {
+                        escaped = false;
+                    } else if input[i] == b'\\' {
+                        escaped = true;
+                    } else if input[i] == b'"' {
+                        in_string = false;
+                    }
+                } else {
+                    match input[i] {
+                        b'"' => in_string = true,
+                        c if c == bracket => depth += 1,
+                        c if c == closing => depth -= 1,
+                        _ => {}
+                    }
+                }
+                i += 1;
+            }
+            i
+        }
+        b'"' => {
+            // String
+            i += 1;
+            while i < input.len() {
+                if escaped {
+                    escaped = false;
+                } else if input[i] == b'\\' {
+                    escaped = true;
+                } else if input[i] == b'"' {
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            i
+        }
+        b't' | b'f' | b'n' | b'-' | b'0'..=b'9' => {
+            // true, false, null, or number
+            while i < input.len() && !matches!(input[i], b' ' | b'\t' | b'\n' | b'\r' | b',' | b'}' | b']') {
+                i += 1;
+            }
+            i
+        }
+        _ => input.len(),
+    }
 }
 
 // ===========================================================================

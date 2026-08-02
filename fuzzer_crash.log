@@ -1,0 +1,21 @@
+╔═══════════════════════════════════════════════════════════════════════════╗
+║ 🚨 DIFFERENTIAL FUZZING DISCREPANCY DETECTED                              ║
+╠═══════════════════════════════════════════════════════════════════════════╣
+║ Type: C_OK_RUST_ERR                                                          ║
+║ Description: C successfully parsed (FALSE POSITIVE?) but Rust rejected       ║
+╠═══════════════════════════════════════════════════════════════════════════╣
+║ Details: Rust Error: JSON parse error at byte 1: unexpected content after... ║
+╠═══════════════════════════════════════════════════════════════════════════╣
+║ Input Size: 17 bytes
+║
+║ HEX DUMP (for reproduction):
+║ 0000  34 00 01 00 05 00 00 00 00 00 00 00 0a 00 00 00  │ 4...............
+║ 0010  00                                               │ .
+║
+║ BASE64 (for easy reproduction):
+║ NAABAAUAAAAAAAAACgAAAAA=
+║
+║ RAW BYTES (Rust array literal):
+║ &[0x34, 0x00, 0x01, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
+║   0x0a, 0x00, 0x00, 0x00, 0x00]
+╚═══════════════════════════════════════════════════════════════════════════╝

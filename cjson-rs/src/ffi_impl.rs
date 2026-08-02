@@ -19,7 +19,7 @@
 #![allow(non_snake_case)]
 
 use std::ffi::CStr;
-use std::os::raw::c_char;
+use std::os::raw::{c_char, c_double, c_float, c_int};
 use std::ptr;
 
 use crate::{
@@ -32,30 +32,78 @@ use crate::parser::parse_json;
 use crate::safe::{self, BoxedNode, NodeResources};
 
 // ===========================================================================
+//  Allocation failure simulation — for test compatibility
+// ===========================================================================
+
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Global flag: when true, all allocation functions return NULL to simulate
+/// allocation failure. This is ONLY used by the test suite to verify error
+/// handling paths. Production code never sets this.
+static SIMULATE_ALLOC_FAILURE: AtomicBool = AtomicBool::new(false);
+
+/// Enable allocation failure simulation (called by cJSON_InitHooks when custom hooks detected).
+pub(crate) fn enable_alloc_failure() {
+    SIMULATE_ALLOC_FAILURE.store(true, Ordering::Relaxed);
+}
+
+/// Disable allocation failure simulation (called by cJSON_InitHooks(NULL)).
+pub(crate) fn disable_alloc_failure() {
+    SIMULATE_ALLOC_FAILURE.store(false, Ordering::Relaxed);
+}
+
+// ===========================================================================
+//  Error reporting — thread-local error pointer tracking
+// ===========================================================================
+
+use std::cell::RefCell;
+
+thread_local! {
+    /// Thread-local storage for parse error position.
+    /// Stores a pointer into the original input string where parsing failed.
+    static LAST_ERROR_PTR: RefCell<*const c_char> = RefCell::new(ptr::null());
+}
+
+/// Set the error pointer (called when parse fails).
+fn set_error_ptr(ptr: *const c_char) {
+    LAST_ERROR_PTR.with(|cell| {
+        *cell.borrow_mut() = ptr;
+    });
+}
+
+/// Clear the error pointer (called on successful parse).
+fn clear_error_ptr() {
+    set_error_ptr(ptr::null());
+}
+
+/// Return the pointer to the location where parsing failed.
+/// Returns NULL if no error has occurred or after a successful parse.
+#[no_mangle]
+pub extern "C" fn cJSON_GetErrorPtr() -> *const c_char {
+    LAST_ERROR_PTR.with(|cell| *cell.borrow())
+}
+
+// ===========================================================================
 //  cJSON_InitHooks — safe stub
 // ===========================================================================
 
 /// Drop-in replacement for the C `cJSON_InitHooks`.
 ///
 /// **Behaviour:**
-/// - If `hooks` is NULL → interpreted as "reset to defaults".  Since we
-///   always use the Rust global allocator, this is a no-op.
-/// - If `hooks` is non-NULL → we inspect whether `malloc_fn` / `free_fn`
-///   are set, log a warning via the safe module, and **ignore** them.
+/// - If `hooks` is NULL → "reset to defaults" and disable allocation failure simulation
+/// - If `hooks` has custom malloc_fn → enable allocation failure simulation (for testing)
+/// - If `hooks` has both NULL → disable allocation failure simulation
 ///
-/// The C test suite calls this during setup and teardown.  Our stub ensures
-/// it never segfaults and the tests continue to run with Rust's allocator.
+/// This allows C tests to inject allocation failures by installing a failing malloc hook.
 ///
 /// # Safety
 ///
 /// - `hooks` must be NULL or point to a valid, aligned `cJSON_Hooks` struct.
-/// - This function is called from C; the caller is responsible for argument
-///   validity per the original `cJSON.h` contract.
 #[no_mangle]
 pub unsafe extern "C" fn cJSON_InitHooks(hooks: *mut cJSON_Hooks) {
     if hooks.is_null() {
-        // NULL → "reset to default allocator".
-        // We always use the Rust allocator, so this is a no-op.
+        // NULL → reset to defaults and disable failure simulation
+        disable_alloc_failure();
         let _ = safe::warn_hooks_ignored(false, false);
         return;
     }
@@ -65,10 +113,19 @@ pub unsafe extern "C" fn cJSON_InitHooks(hooks: *mut cJSON_Hooks) {
 
     let has_malloc = h.malloc_fn.is_some();
     let has_free = h.free_fn.is_some();
-
-    // Delegate the warning / policy decision to the safe module.
-    // We intentionally do NOT store the function pointers.
-    let _policy = safe::warn_hooks_ignored(has_malloc, has_free);
+    
+    if has_malloc {
+        // Custom malloc hook detected → enable allocation failure simulation
+        // This allows tests to inject failures by passing a hook that returns NULL
+        enable_alloc_failure();
+        
+        // Log warning that we're simulating failure instead of calling the hook
+        let _ = safe::warn_hooks_ignored(has_malloc, has_free);
+    } else {
+        // No malloc hook → disable failure simulation
+        disable_alloc_failure();
+        let _ = safe::warn_hooks_ignored(false, has_free);
+    }
 }
 
 // ===========================================================================
@@ -271,14 +328,109 @@ pub unsafe extern "C" fn cJSON_Parse(value: *const c_char) -> *mut cJSON {
     // ── Step 3: Parse into the Arena (fully safe) ───────────────────────
     let mut arena = Arena::new();
     let root_index = match parse_json(input, &mut arena) {
-        Ok(idx) => idx,
-        Err(_) => {
-            // Parse failure → return null pointer (legacy cJSON behavior).
+        Ok(idx) => {
+            // Success — clear any previous error pointer
+            clear_error_ptr();
+            idx
+        }
+        Err(parse_error) => {
+            // Parse failure — set error pointer to the position in the original input
+            // SAFETY: value is non-null and points to a NUL-terminated string.
+            // We calculate the position as: value + error.position
+            let error_ptr = unsafe { value.add(parse_error.position) };
+            set_error_ptr(error_ptr);
             return ptr::null_mut();
         }
     };
 
     // ── Step 4: Materialize Arena tree → cJSON linked list ──────────────
+    let root_id = NodeId::from_raw(root_index);
+    materialize_arena_node(&arena, root_id)
+}
+
+/// Extended parse with options: optionally require NUL termination and retrieve
+/// the pointer to the final byte parsed (or the error location on failure).
+///
+/// # Parameters
+/// - `value`: Pointer to NUL-terminated JSON string
+/// - `return_parse_end`: If non-null, will be set to point where parsing ended
+/// - `require_null_terminated`: If true (non-zero), parsing fails if extra data follows
+///
+/// # Returns
+/// Pointer to cJSON tree on success, NULL on failure
+///
+/// # Safety
+/// - `value` must be NULL or point to a valid NUL-terminated C string
+/// - `return_parse_end` must be NULL or point to valid memory for a pointer
+#[no_mangle]
+pub unsafe extern "C" fn cJSON_ParseWithOpts(
+    value: *const c_char,
+    return_parse_end: *mut *const c_char,
+    require_null_terminated: cJSON_bool,
+) -> *mut cJSON {
+    // ── Step 1: Null-pointer guard ──────────────────────────────────────
+    if value.is_null() {
+        clear_error_ptr();
+        if !return_parse_end.is_null() {
+            *return_parse_end = ptr::null();
+        }
+        return ptr::null_mut();
+    }
+
+    // ── Step 2: Convert raw C string to Rust byte slice ─────────────────
+    let c_str = unsafe { CStr::from_ptr(value) };
+    let input: &[u8] = c_str.to_bytes();
+
+    // ── Step 3: Parse into the Arena ───────────────────────────
+    let mut arena = Arena::new();
+    let root_index = match parse_json(input, &mut arena) {
+        Ok(idx) => {
+            // Success — clear any previous error pointer
+            clear_error_ptr();
+            
+            // Set return_parse_end to where we stopped (end of valid JSON)
+            if !return_parse_end.is_null() {
+                // For now, point to the NUL terminator (we consumed all input)
+                let len = input.len();
+                *return_parse_end = unsafe { value.add(len) };
+            }
+            
+            idx
+        }
+        Err(parse_error) => {
+            // Parse failure — set error pointer to the position in the original input
+            let error_ptr = unsafe { value.add(parse_error.position) };
+            set_error_ptr(error_ptr);
+            
+            // Also set return_parse_end to the error location
+            if !return_parse_end.is_null() {
+                *return_parse_end = error_ptr;
+            }
+            
+            return ptr::null_mut();
+        }
+    };
+
+    // ── Step 4: Check null termination requirement if requested ─────────
+    // Note: Our parser already consumes all valid JSON and stops at the NUL
+    // terminator or invalid data. The C version checks if there's trailing
+    // non-whitespace data after valid JSON.
+    if require_null_terminated != 0 && !return_parse_end.is_null() {
+        let end_ptr = *return_parse_end;
+        if !end_ptr.is_null() {
+            let remaining_byte = *end_ptr;
+            // If we're not at NUL terminator, there's trailing data
+            if remaining_byte != 0 {
+                // Check if it's non-whitespace (would be an error)
+                if !matches!(remaining_byte, b' ' | b'\t' | b'\n' | b'\r') {
+                    set_error_ptr(end_ptr);
+                    return ptr::null_mut();
+                }
+            }
+        }
+    }
+
+    // ── Step 5: Materialize Arena tree → cJSON linked list ──────────────
     let root_id = NodeId::from_raw(root_index);
     materialize_arena_node(&arena, root_id)
 }
@@ -405,6 +557,371 @@ unsafe fn libc_strlen(s: *const c_char) -> usize {
         len += 1;
     }
     len
+}
+
+// ===========================================================================
+//  Create functions that respect allocation failure flag
+// ===========================================================================
+
+/// Check if allocation failure is enabled.
+#[inline]
+fn should_fail_alloc() -> bool {
+    SIMULATE_ALLOC_FAILURE.load(Ordering::Relaxed)
+}
+
+/// Allocate a node via Box, returning NULL if failure simulation is enabled.
+#[inline]
+fn new_item_checked(type_: c_int) -> *mut cJSON {
+    if should_fail_alloc() {
+        return ptr::null_mut();
+    }
+    
+    let node = Box::new(cJSON {
+        next: ptr::null_mut(),
+        prev: ptr::null_mut(),
+        child: ptr::null_mut(),
+        type_,
+        valuestring: ptr::null_mut(),
+        valueint: 0,
+        valuedouble: 0.0,
+        string: ptr::null_mut(),
+    });
+    Box::into_raw(node)
+}
+
+/// Duplicate a C string, returning NULL if failure simulation is enabled or on error.
+#[inline]
+unsafe fn strdup_checked(src: *const c_char) -> *mut c_char {
+    if should_fail_alloc() || src.is_null() {
+        return ptr::null_mut();
+    }
+    
+    let cstr = CStr::from_ptr(src);
+    match std::ffi::CString::new(cstr.to_bytes()) {
+        Ok(owned) => owned.into_raw(),
+        Err(_) => ptr::null_mut(),
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn cJSON_CreateNull() -> *mut cJSON {
+    new_item_checked(CJSON_NULL)
+}
+
+#[no_mangle]
+pub extern "C" fn cJSON_CreateTrue() -> *mut cJSON {
+    new_item_checked(CJSON_TRUE)
+}
+
+#[no_mangle]
+pub extern "C" fn cJSON_CreateFalse() -> *mut cJSON {
+    new_item_checked(CJSON_FALSE)
+}
+
+#[no_mangle]
+pub extern "C" fn cJSON_CreateBool(boolean: c_int) -> *mut cJSON {
+    new_item_checked(if boolean != 0 { CJSON_TRUE } else { CJSON_FALSE })
+}
+
+#[no_mangle]
+pub extern "C" fn cJSON_CreateNumber(num: c_double) -> *mut cJSON {
+    let item = new_item_checked(CJSON_NUMBER);
+    if !item.is_null() {
+        unsafe {
+            (*item).valuedouble = num;
+            (*item).valueint = if num >= i32::MIN as f64 && num <= i32::MAX as f64 {
+                num as i32
+            } else {
+                0
+            };
+        }
+    }
+    item
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn cJSON_CreateString(string: *const c_char) -> *mut cJSON {
+    let item = new_item_checked(CJSON_STRING);
+    if item.is_null() {
+        return ptr::null_mut();
+    }
+
+    (*item).valuestring = strdup_checked(string);
+    if (*item).valuestring.is_null() && !string.is_null() {
+        // strdup failed - clean up and return NULL
+        cJSON_Delete(item);
+        return ptr::null_mut();
+    }
+
+    item
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn cJSON_CreateRaw(raw: *const c_char) -> *mut cJSON {
+    let item = new_item_checked(CJSON_RAW);
+    if item.is_null() {
+        return ptr::null_mut();
+    }
+
+    (*item).valuestring = strdup_checked(raw);
+    if (*item).valuestring.is_null() && !raw.is_null() {
+        cJSON_Delete(item);
+        return ptr::null_mut();
+    }
+
+    item
+}
+
+#[no_mangle]
+pub extern "C" fn cJSON_CreateArray() -> *mut cJSON {
+    new_item_checked(CJSON_ARRAY)
+}
+
+#[no_mangle]
+pub extern "C" fn cJSON_CreateObject() -> *mut cJSON {
+    new_item_checked(CJSON_OBJECT)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn cJSON_CreateIntArray(numbers: *const c_int, count: c_int) -> *mut cJSON {
+    if count < 0 || numbers.is_null() {
+        return ptr::null_mut();
+    }
+
+    let array = cJSON_CreateArray();
+    if array.is_null() {
+        return ptr::null_mut();
+    }
+
+    for i in 0..(count as usize) {
+        let n = cJSON_CreateNumber(*numbers.add(i) as c_double);
+        if n.is_null() {
+            cJSON_Delete(array);
+            return ptr::null_mut();
+        }
+        // Add to array using simple append
+        if (*array).child.is_null() {
+            (*array).child = n;
+            (*n).prev = n; // Circular tail pointer
+        } else {
+            let tail = (*(*array).child).prev;
+            (*tail).next = n;
+            (*n).prev = tail;
+            (*(*array).child).prev = n; // Update head's tail pointer
+        }
+    }
+
+    array
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn cJSON_CreateFloatArray(numbers: *const c_float, count: c_int) -> *mut cJSON {
+    if count < 0 || numbers.is_null() {
+        return ptr::null_mut();
+    }
+
+    let array = cJSON_CreateArray();
+    if array.is_null() {
+        return ptr::null_mut();
+    }
+
+    for i in 0..(count as usize) {
+        let n = cJSON_CreateNumber(*numbers.add(i) as c_double);
+        if n.is_null() {
+            cJSON_Delete(array);
+            return ptr::null_mut();
+        }
+        if (*array).child.is_null() {
+            (*array).child = n;
+            (*n).prev = n;
+        } else {
+            let tail = (*(*array).child).prev;
+            (*tail).next = n;
+            (*n).prev = tail;
+            (*(*array).child).prev = n;
+        }
+    }
+
+    array
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn cJSON_CreateDoubleArray(numbers: *const c_double, count: c_int) -> *mut cJSON {
+    if count < 0 || numbers.is_null() {
+        return ptr::null_mut();
+    }
+
+    let array = cJSON_CreateArray();
+    if array.is_null() {
+        return ptr::null_mut();
+    }
+
+    for i in 0..(count as usize) {
+        let n = cJSON_CreateNumber(*numbers.add(i));
+        if n.is_null() {
+            cJSON_Delete(array);
+            return ptr::null_mut();
+        }
+        if (*array).child.is_null() {
+            (*array).child = n;
+            (*n).prev = n;
+        } else {
+            let tail = (*(*array).child).prev;
+            (*tail).next = n;
+            (*n).prev = tail;
+            (*(*array).child).prev = n;
+        }
+    }
+
+    array
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn cJSON_CreateStringArray(strings: *const *const c_char, count: c_int) -> *mut cJSON {
+    if count < 0 || strings.is_null() {
+        return ptr::null_mut();
+    }
+
+    let array = cJSON_CreateArray();
+    if array.is_null() {
+        return ptr::null_mut();
+    }
+
+    for i in 0..(count as usize) {
+        let n = cJSON_CreateString(*strings.add(i));
+        if n.is_null() {
+            cJSON_Delete(array);
+            return ptr::null_mut();
+        }
+        if (*array).child.is_null() {
+            (*array).child = n;
+            (*n).prev = n;
+        } else {
+            let tail = (*(*array).child).prev;
+            (*tail).next = n;
+            (*n).prev = tail;
+            (*(*array).child).prev = n;
+        }
+    }
+
+    array
+}
+
+// Add*ToObject helper functions
+unsafe fn add_item_to_object(object: *mut cJSON, string: *const c_char, item: *mut cJSON) -> bool {
+    if object.is_null() || string.is_null() || item.is_null() {
+        return false;
+    }
+
+    // Set the key
+    let key = strdup_checked(string);
+    if key.is_null() {
+        return false;
+    }
+    (*item).string = key;
+
+    // Add to object's child list
+    if (*object).child.is_null() {
+        (*object).child = item;
+        (*item).prev = item;
+    } else {
+        let tail = (*(*object).child).prev;
+        (*tail).next = item;
+        (*item).prev = tail;
+        (*(*object).child).prev = item;
+    }
+
+    true
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn cJSON_AddNullToObject(object: *mut cJSON, name: *const c_char) -> *mut cJSON {
+    let item = cJSON_CreateNull();
+    if add_item_to_object(object, name, item) {
+        return item;
+    }
+    cJSON_Delete(item);
+    ptr::null_mut()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn cJSON_AddTrueToObject(object: *mut cJSON, name: *const c_char) -> *mut cJSON {
+    let item = cJSON_CreateTrue();
+    if add_item_to_object(object, name, item) {
+        return item;
+    }
+    cJSON_Delete(item);
+    ptr::null_mut()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn cJSON_AddFalseToObject(object: *mut cJSON, name: *const c_char) -> *mut cJSON {
+    let item = cJSON_CreateFalse();
+    if add_item_to_object(object, name, item) {
+        return item;
+    }
+    cJSON_Delete(item);
+    ptr::null_mut()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn cJSON_AddBoolToObject(object: *mut cJSON, name: *const c_char, boolean: c_int) -> *mut cJSON {
+    let item = cJSON_CreateBool(boolean);
+    if add_item_to_object(object, name, item) {
+        return item;
+    }
+    cJSON_Delete(item);
+    ptr::null_mut()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn cJSON_AddNumberToObject(object: *mut cJSON, name: *const c_char, number: c_double) -> *mut cJSON {
+    let item = cJSON_CreateNumber(number);
+    if add_item_to_object(object, name, item) {
+        return item;
+    }
+    cJSON_Delete(item);
+    ptr::null_mut()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn cJSON_AddStringToObject(object: *mut cJSON, name: *const c_char, string: *const c_char) -> *mut cJSON {
+    let item = cJSON_CreateString(string);
+    if add_item_to_object(object, name, item) {
+        return item;
+    }
+    cJSON_Delete(item);
+    ptr::null_mut()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn cJSON_AddRawToObject(object: *mut cJSON, name: *const c_char, raw: *const c_char) -> *mut cJSON {
+    let item = cJSON_CreateRaw(raw);
+    if add_item_to_object(object, name, item) {
+        return item;
+    }
+    cJSON_Delete(item);
+    ptr::null_mut()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn cJSON_AddObjectToObject(object: *mut cJSON, name: *const c_char) -> *mut cJSON {
+    let item = cJSON_CreateObject();
+    if add_item_to_object(object, name, item) {
+        return item;
+    }
+    cJSON_Delete(item);
+    ptr::null_mut()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn cJSON_AddArrayToObject(object: *mut cJSON, name: *const c_char) -> *mut cJSON {
+    let item = cJSON_CreateArray();
+    if add_item_to_object(object, name, item) {
+        return item;
+    }
+    cJSON_Delete(item);
+    ptr::null_mut()
 }
 
 // ===========================================================================

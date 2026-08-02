@@ -103,6 +103,29 @@ $(CJSON_COMPAT_OBJ): $(CJSON_COMPAT_SRC) $(PROJECT_ROOT)/cJSON.h | $(BUILD_DIR)
 		-DcJSON_Parse=_disabled_cJSON_Parse \
 		-DcJSON_Delete=_disabled_cJSON_Delete \
 		-DcJSON_InitHooks=_disabled_cJSON_InitHooks \
+		-DcJSON_GetErrorPtr=_disabled_cJSON_GetErrorPtr \
+		-DcJSON_CreateNull=_disabled_cJSON_CreateNull \
+		-DcJSON_CreateTrue=_disabled_cJSON_CreateTrue \
+		-DcJSON_CreateFalse=_disabled_cJSON_CreateFalse \
+		-DcJSON_CreateBool=_disabled_cJSON_CreateBool \
+		-DcJSON_CreateNumber=_disabled_cJSON_CreateNumber \
+		-DcJSON_CreateString=_disabled_cJSON_CreateString \
+		-DcJSON_CreateRaw=_disabled_cJSON_CreateRaw \
+		-DcJSON_CreateArray=_disabled_cJSON_CreateArray \
+		-DcJSON_CreateObject=_disabled_cJSON_CreateObject \
+		-DcJSON_CreateIntArray=_disabled_cJSON_CreateIntArray \
+		-DcJSON_CreateFloatArray=_disabled_cJSON_CreateFloatArray \
+		-DcJSON_CreateDoubleArray=_disabled_cJSON_CreateDoubleArray \
+		-DcJSON_CreateStringArray=_disabled_cJSON_CreateStringArray \
+		-DcJSON_AddNullToObject=_disabled_cJSON_AddNullToObject \
+		-DcJSON_AddTrueToObject=_disabled_cJSON_AddTrueToObject \
+		-DcJSON_AddFalseToObject=_disabled_cJSON_AddFalseToObject \
+		-DcJSON_AddBoolToObject=_disabled_cJSON_AddBoolToObject \
+		-DcJSON_AddNumberToObject=_disabled_cJSON_AddNumberToObject \
+		-DcJSON_AddStringToObject=_disabled_cJSON_AddStringToObject \
+		-DcJSON_AddRawToObject=_disabled_cJSON_AddRawToObject \
+		-DcJSON_AddObjectToObject=_disabled_cJSON_AddObjectToObject \
+		-DcJSON_AddArrayToObject=_disabled_cJSON_AddArrayToObject \
 		-Wno-unused-function \
 		-Wno-unused-parameter \
 		-o $@ $(CJSON_COMPAT_SRC)

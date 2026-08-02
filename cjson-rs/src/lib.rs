@@ -51,6 +51,13 @@ pub mod parser;
 /// Minimal `unsafe` at the boundary only; delegates to `safe` for all logic.
 mod ffi_impl;
 
+// NOTE: ffi_impl_all.rs provides implementations of ALL cJSON functions,
+// but it's only used for full Rust builds, not for C/Rust hybrid builds.
+// When linking with C cJSON code (as in the Unity tests), only ffi_impl.rs
+// is used (which provides just Parse/Delete/InitHooks).
+#[cfg(feature = "full_rust_impl")]
+pub mod ffi_impl_all;
+
 // Re-export the implemented functions so they can be used from examples
 pub use ffi_impl::{cJSON_InitHooks, cJSON_Delete, cJSON_Parse};
 

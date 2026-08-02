@@ -1,0 +1,36 @@
+==================== EXAMPLE libFuzzer/cargo-fuzz CRASH LOG ====================
+
+A real crash log from cargo-fuzz looks like this:
+
+INFO: Running with entropic power schedule (0xFF, 100).
+INFO: Seed: 1234567890
+INFO: Loaded 1 modules   (12345 inline 8-bit counters): 12345 [0x10a8e0000, 0x10a8e3039), 
+INFO: -max_len is not provided; libFuzzer will not generate inputs larger than 4096 bytes
+INFO: A corpus is not provided, starting from an empty corpus
+#2	INITED cov: 123 ft: 456 corp: 1/1b exec/s: 0 rss: 45Mb
+#8	NEW    cov: 234 ft: 567 corp: 2/3b lim: 4 exec/s: 0 rss: 45Mb L: 2/2 MS: 1 InsertByte-
+#16	NEW    cov: 345 ft: 678 corp: 3/7b lim: 4 exec/s: 0 rss: 45Mb L: 4/4 MS: 2 ChangeBit-
+==1234==ERROR: AddressSanitizer: SEGV on unknown address 0x000000000000 (pc 0x00010a123456 bp 0x00016fdff000 sp 0x00016fdfefc0 T0)
+==1234==The signal is caused by a READ memory access.
+==1234==Hint: address points to the zero page.
+    #0 0x10a123456 in cJSON_Parse_subopt /path/to/cJSON.c:2345:12
+    #1 0x10a234567 in cJSON_ParseWithOpts /path/to/cJSON.c:2389:16
+    #2 0x10a345678 in LLVMFuzzerTestOneInput /path/to/fuzz_target.rs:23:5
+
+AddressSanitizer can not provide additional info.
+SUMMARY: AddressSanitizer: SEGV /path/to/cJSON.c:2345:12 in cJSON_Parse_subopt
+==1234==ABORTING
+MS: 3 ChangeByte-EraseBytes-InsertByte-; base unit: abc123def456
+0x7b,0x22,0x6e,0x22,0x3a,0x22,0x78,0x78
+artifact_prefix='./'; Test unit written to ./crash-1a2b3c4d5e6f7890
+Base64: eyJuIjoieHgi
+
+====================================================================================
+
+The script looks for these key patterns:
+1. "Test unit written to ./crash-XXXXX"  ← Most common
+2. "0x7b,0x22,0x6e,..."  ← Hex dump of crash input
+3. "artifact_prefix='./'"  ← Path where crash file was saved
+4. "Base64: eyJuIj..."  ← Base64 encoded input (sometimes)
+
+The example above would extract: {"n":"xx"  (truncated JSON causing the crash)

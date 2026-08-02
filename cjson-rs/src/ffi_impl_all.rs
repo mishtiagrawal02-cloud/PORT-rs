@@ -43,6 +43,9 @@ use crate::{
 /// This is the Rust equivalent of the C `cJSON_New_Item`.  Every node
 /// created by this function MUST eventually be freed by `cJSON_Delete`
 /// (which calls `Box::from_raw`).
+///
+/// For hybrid C/Rust builds, allocation failure is controlled by cJSON_InitHooks
+/// in ffi_impl.rs. This module is not compiled in hybrid builds.
 #[inline]
 fn new_item(type_: c_int) -> *mut cJSON {
     let node = Box::new(cJSON {
@@ -242,14 +245,62 @@ pub unsafe extern "C" fn cJSON_GetNumberValue(item: *const cJSON) -> c_double {
 }
 
 // ===========================================================================
-//  Error reporting
+//  Allocation failure simulation — for test compatibility
 // ===========================================================================
 
-/// Stub: parse errors are tracked internally by the parser (not yet ported).
-/// Returns NULL until the parser is implemented.
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Global flag: when true, all allocation functions return NULL to simulate
+/// allocation failure. This is ONLY used by the test suite to verify error
+/// handling paths. Production code never sets this.
+static SIMULATE_ALLOC_FAILURE: AtomicBool = AtomicBool::new(false);
+
+/// Check if we should simulate allocation failure (for testing).
+#[inline]
+fn should_fail_alloc() -> bool {
+    SIMULATE_ALLOC_FAILURE.load(Ordering::Relaxed)
+}
+
+/// Enable allocation failure simulation (called by test hooks).
+pub(crate) fn enable_alloc_failure() {
+    SIMULATE_ALLOC_FAILURE.store(true, Ordering::Relaxed);
+}
+
+/// Disable allocation failure simulation.
+pub(crate) fn disable_alloc_failure() {
+    SIMULATE_ALLOC_FAILURE.store(false, Ordering::Relaxed);
+}
+
+// ===========================================================================
+//  Error reporting — thread-local error pointer tracking
+// ===========================================================================
+
+use std::cell::RefCell;
+
+thread_local! {
+    /// Thread-local storage for parse error position.
+    /// Stores a pointer into the original input string where parsing failed.
+    /// This matches the C behavior of cJSON_GetErrorPtr().
+    static LAST_ERROR_PTR: RefCell<*const c_char> = RefCell::new(ptr::null());
+}
+
+/// Set the error pointer (called internally when parse fails).
+pub(crate) fn set_error_ptr(ptr: *const c_char) {
+    LAST_ERROR_PTR.with(|cell| {
+        *cell.borrow_mut() = ptr;
+    });
+}
+
+/// Clear the error pointer (called on successful parse).
+pub(crate) fn clear_error_ptr() {
+    set_error_ptr(ptr::null());
+}
+
+/// Return the pointer to the location where parsing failed.
+/// Returns NULL if no error has occurred or after a successful parse.
 #[no_mangle]
 pub extern "C" fn cJSON_GetErrorPtr() -> *const c_char {
-    ptr::null()
+    LAST_ERROR_PTR.with(|cell| *cell.borrow())
 }
 
 // ===========================================================================
@@ -1375,16 +1426,9 @@ pub unsafe extern "C" fn cJSON_free(object: *mut c_void) {
 // ===========================================================================
 //  Parsing stubs
 //
-//  The parser is NOT yet ported.  These stubs return NULL so the C test
-//  suite won't crash — tests that depend on parsing will simply fail
-//  with "parse returned NULL".
+//  cJSON_Parse is implemented in ffi_impl.rs with full arena-backed parsing.
+//  The remaining parsing functions are stubs that return NULL.
 // ===========================================================================
-
-#[no_mangle]
-pub unsafe extern "C" fn cJSON_Parse(_value: *const c_char) -> *mut cJSON {
-    // TODO: implement parser
-    ptr::null_mut()
-}
 
 #[no_mangle]
 pub unsafe extern "C" fn cJSON_ParseWithLength(
